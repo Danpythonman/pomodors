@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use if_addrs::IfOperStatus;
 use tokio::net::TcpListener;
 
 use client::Digits;
@@ -101,7 +102,7 @@ impl DisplayArgs {
             .name
             .or_else(|| std::env::var("USER").ok())
             .unwrap_or_else(|| "anonymous".into());
-        client::Options { addr, name, digits: self.digits }
+        client::Options { addr, name, digits: self.digits, join_hints: Vec::new() }
     }
 }
 
@@ -128,17 +129,60 @@ async fn bind(addr: &str) -> Result<TcpListener> {
     TcpListener::bind(addr).await.with_context(|| format!("could not listen on {addr}"))
 }
 
+/// Addresses other people can use to reach a server bound to `local`.
+fn join_addresses(local: SocketAddr) -> Vec<(SocketAddr, String)> {
+    if !local.ip().is_unspecified() {
+        return vec![(local, String::new())];
+    }
+    let Ok(ifaces) = if_addrs::get_if_addrs() else {
+        return Vec::new();
+    };
+    let mut addrs: Vec<_> = ifaces
+        .into_iter()
+        .filter(|i| !i.is_loopback() && !i.is_link_local())
+        .filter(|i| !matches!(i.oper_status, IfOperStatus::Down | IfOperStatus::NotPresent))
+        // Container and VM bridges aren't reachable from other machines.
+        .filter(|i| !["docker", "br-", "veth", "virbr"].iter().any(|p| i.name.starts_with(p)))
+        // A [::] socket also accepts IPv4 on Linux and macOS; 0.0.0.0 is IPv4 only.
+        .filter(|i| local.is_ipv6() || i.ip().is_ipv4())
+        .map(|i| (SocketAddr::new(i.ip(), local.port()), i.name))
+        .collect();
+    addrs.sort_by_key(|(addr, _)| addr.is_ipv6());
+    addrs
+}
+
+/// Human-readable lines telling others how to join a server bound to `local`.
+fn join_hints(local: SocketAddr) -> Vec<String> {
+    if local.ip().is_loopback() {
+        return vec![format!(
+            "only this machine can join; use -a 0.0.0.0:{} to allow others",
+            local.port()
+        )];
+    }
+    join_addresses(local)
+        .into_iter()
+        .map(|(addr, iface)| match iface.as_str() {
+            "" => format!("pomodors join {addr}"),
+            _ => format!("pomodors join {addr}  ({iface})"),
+        })
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Serve { addr, timer } => {
             let listener = bind(&addr).await?;
             eprintln!("pomodors server listening on {}", listener.local_addr()?);
+            for line in join_hints(listener.local_addr()?) {
+                eprintln!("  {line}");
+            }
             server::run(listener, timer.into_config()).await
         }
         Command::Host { addr, timer, display } => {
             let listener = bind(&addr).await?;
             let mut local = listener.local_addr()?;
+            let hints = join_hints(local);
             tokio::spawn(server::run(listener, timer.into_config()));
             // Can't connect to 0.0.0.0 / [::], so use loopback in that case.
             if local.ip().is_unspecified() {
@@ -147,7 +191,9 @@ async fn main() -> Result<()> {
                     SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
                 });
             }
-            client::run(display.into_options(local.to_string())).await
+            let mut opts = display.into_options(local.to_string());
+            opts.join_hints = hints;
+            client::run(opts).await
         }
         Command::Join { addr, display } => client::run(display.into_options(addr)).await,
     }

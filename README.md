@@ -42,6 +42,19 @@ flowchart LR
     C["carol<br/><code>pomodors join alice-pc:7878</code>"] <-->|TCP| S
 ```
 
+When the server is reachable from other machines, `host` shows the exact
+`pomodors join …` commands others can use (one per network interface), and
+`serve` prints them on startup:
+
+```
+$ pomodors serve -a 0.0.0.0:7878
+pomodors server listening on 0.0.0.0:7878
+  pomodors join 192.168.2.25:7878  (wlp7s0)
+  pomodors join 100.86.204.119:7878  (tailscale0)
+```
+
+If nobody can connect, check that your firewall allows incoming TCP on the port.
+
 ### Commands
 
 | Command | What it does |
@@ -56,7 +69,7 @@ Timer options (`host`, `serve`):
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `-a, --addr` | `127.0.0.1:7878` | Address to listen on. |
+| `-a, --addr` | `127.0.0.1:7878` | Address to listen on. Use `0.0.0.0:7878` to accept connections from other machines. |
 | `-w, --work` | `25m` | Work session length. |
 | `--short-break` | `5m` | Short break length. |
 | `--long-break` | `15m` | Long break length. |

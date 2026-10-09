@@ -28,6 +28,8 @@ pub struct Options {
     pub addr: String,
     pub name: String,
     pub digits: Digits,
+    /// Shown on screen so the host can tell others how to connect.
+    pub join_hints: Vec<String>,
 }
 
 /// Puts the terminal into full-screen raw mode and restores it on drop.
@@ -76,7 +78,12 @@ pub async fn run(opts: Options) -> Result<()> {
 
     let mut events = EventStream::new();
     let mut redraw = tokio::time::interval(Duration::from_millis(100));
-    let mut screen = Screen { digits: opts.digits, state: None, last_frame: None };
+    let mut screen = Screen {
+        digits: opts.digits,
+        join_hints: opts.join_hints,
+        state: None,
+        last_frame: None,
+    };
 
     loop {
         tokio::select! {
@@ -143,6 +150,7 @@ impl Line {
 
 struct Screen {
     digits: Digits,
+    join_hints: Vec<String>,
     /// Latest server state and when we received it, for local interpolation.
     state: Option<(Snapshot, Instant)>,
     last_frame: Option<(Vec<Line>, (u16, u16))>,
@@ -193,6 +201,11 @@ impl Screen {
             format!("{} connected: {}", snap.users.len(), snap.users.join(", ")),
             Color::Grey,
         ));
+        if !self.join_hints.is_empty() {
+            lines.push(Line::new("", color));
+            lines.push(Line::new("others can join with:", Color::DarkGrey));
+            lines.extend(self.join_hints.iter().map(|h| Line::new(h.clone(), Color::DarkGrey)));
+        }
         lines
     }
 
